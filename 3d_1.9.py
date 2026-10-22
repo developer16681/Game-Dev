@@ -121,6 +121,9 @@ create_sound_assets()
 # --- Engine Setup ---
 app = Ursina()
 
+# Cap the game to 60 FPS
+application.target_frame_rate = 60
+
 # Procedural Meshes
 cylinder_mesh = Cylinder(resolution=12)
 cone_mesh = Cone(resolution=12)
