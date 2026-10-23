@@ -45,6 +45,12 @@ camera.position = (0, 28, -20)
 camera.rotation = (54, 0, 0)
 camera.fov = 50
 
+# Procedural 3D primitive models
+CYL = Cylinder(resolution=12)
+
+# Global game director reference
+game = None
+
 # Global sound folder
 SOUNDS_DIR = Path(__file__).resolve().parent / 'sounds'
 
@@ -69,18 +75,19 @@ def generate_sound_assets():
     rate = 22050
 
     def write_wav(filename, samples):
-        filepath = SOUNDS_DIR / filename
-        if filepath.exists() and filepath.stat().st_size > 100:
-            return
-        try:
-            with wave.open(str(filepath), 'wb') as wf:
-                wf.setnchannels(1)
-                wf.setsampwidth(2)
-                wf.setframerate(rate)
-                packed = struct.pack(f'<{len(samples)}h', *samples)
-                wf.writeframes(packed)
-        except Exception as e:
-            print(f"Audio synth notice: {e}")
+        for target_dir in (SOUNDS_DIR, application.asset_folder):
+            filepath = target_dir / filename
+            if filepath.exists() and filepath.stat().st_size > 100:
+                continue
+            try:
+                with wave.open(str(filepath), 'wb') as wf:
+                    wf.setnchannels(1)
+                    wf.setsampwidth(2)
+                    wf.setframerate(rate)
+                    packed = struct.pack(f'<{len(samples)}h', *samples)
+                    wf.writeframes(packed)
+            except Exception:
+                pass
 
     # 1. Cannon Shoot: punchy saw/square sweep down
     dur = 0.16
@@ -192,14 +199,17 @@ generate_sound_assets()
 
 def play_sfx(name, vol=0.65, pitch=1.0):
     """Safely plays a sound without throwing errors if audio device is unavailable."""
-    path = SOUNDS_DIR / name
-    if path.exists():
-        try:
-            snd = Audio(str(path), autoplay=True, auto_destroy=True, volume=vol)
-            if hasattr(snd, 'pitch'):
-                snd.pitch = pitch
-        except Exception:
-            pass
+    clean_name = Path(name).name
+    for candidate in (clean_name, f'sounds/{clean_name}'):
+        f = application.asset_folder / candidate
+        if f.exists():
+            try:
+                snd = Audio(candidate, autoplay=True, auto_destroy=True, volume=vol)
+                if hasattr(snd, 'pitch'):
+                    snd.pitch = pitch
+                return
+            except Exception:
+                pass
 
 
 # =============================================================================
@@ -377,7 +387,7 @@ class RicochetBullet(Entity):
         # Glowing trailing tail
         self.tail = Entity(
             parent=self,
-            model='cylinder',
+            model=CYL,
             position=(0, 0, -0.6),
             rotation=(90, 0, 0),
             scale=(0.18, 0.8, 0.18),
@@ -390,8 +400,11 @@ class RicochetBullet(Entity):
     def update(self):
         step_dist = self.speed * time.dt
         ignore_list = [self, self.tail]
-        if game.arena and hasattr(game.arena, 'floor') and game.arena.floor:
-            ignore_list.append(game.arena.floor)
+        if game and game.arena:
+            if hasattr(game.arena, 'floor') and game.arena.floor:
+                ignore_list.append(game.arena.floor)
+            if hasattr(game.arena, 'ground_hitbox') and game.arena.ground_hitbox:
+                ignore_list.append(game.arena.ground_hitbox)
 
         # Ignore owner ONLY before the first bounce so player cannot shoot themselves point-blank
         if self.bounces_done == 0 and self.owner is not None:
@@ -435,15 +448,13 @@ class RicochetBullet(Entity):
             # Check if we struck a reflective wall or solid obstacle
             if getattr(hit_ent, 'is_reflective', False) or getattr(hit_ent, 'is_wall', False):
                 # Calculate physics reflection on 2D plane: R = V - 2 * (V . N) * N
-                normal = hit.normal
-                normal.y = 0
+                normal = Vec3(hit.normal.x, 0, hit.normal.z)
                 if normal.length() < 0.05:
-                    normal = -self.forward
-                    normal.y = 0
+                    normal = Vec3(-self.forward.x, 0, -self.forward.z)
                 normal = normal.normalized()
 
                 dot = self.direction.dot(normal)
-                refl = (self.direction - 2 * dot * normal).normalized()
+                refl = (self.direction - normal * (2.0 * dot)).normalized()
                 refl.y = 0
                 self.direction = refl.normalized()
 
@@ -518,8 +529,11 @@ class LaserSight:
 
     def update(self, origin, forward_dir):
         ignore_parts = self.tank.parts + [self.beam1, self.dot, self.beam2]
-        if game.arena and hasattr(game.arena, 'floor') and game.arena.floor:
-            ignore_parts.append(game.arena.floor)
+        if game and game.arena:
+            if hasattr(game.arena, 'floor') and game.arena.floor:
+                ignore_parts.append(game.arena.floor)
+            if hasattr(game.arena, 'ground_hitbox') and game.arena.ground_hitbox:
+                ignore_parts.append(game.arena.ground_hitbox)
 
         hit1 = raycast(origin, forward_dir, distance=35.0, ignore=ignore_parts)
 
@@ -535,13 +549,12 @@ class LaserSight:
 
             # Calculate reflection for preview only on reflective surfaces
             is_refl = getattr(hit1.entity, 'is_reflective', False) or getattr(hit1.entity, 'is_wall', False)
-            normal = hit1.normal
-            normal.y = 0
+            normal = Vec3(hit1.normal.x, 0, hit1.normal.z)
             if is_refl and normal.length() > 0.05:
                 normal = normal.normalized()
-                refl_dir = (forward_dir - 2 * forward_dir.dot(normal) * normal).normalized()
-                refl_dir.y = 0
-                refl_dir = refl_dir.normalized()
+                fwd_vec = Vec3(forward_dir.x, 0, forward_dir.z).normalized()
+                dot = fwd_vec.dot(normal)
+                refl_dir = (fwd_vec - normal * (2.0 * dot)).normalized()
                 hit2 = raycast(hit1.point + normal * 0.05, refl_dir, distance=18.0, ignore=ignore_parts + [hit1.entity])
                 dist2 = hit2.distance if hit2.hit else 14.0
                 end_pt = (hit1.point + normal * 0.05) + refl_dir * dist2
@@ -627,7 +640,7 @@ class ExplosiveBarrel(Entity):
     """Volatile plasma cylinder that chain-reacts and damages nearby combatants."""
     def __init__(self, position):
         super().__init__(
-            model='cylinder',
+            model=CYL,
             position=position + Vec3(0, 0.8, 0),
             scale=(1.2, 1.6, 1.2),
             color=color.hex('#e63946'),
@@ -641,7 +654,7 @@ class ExplosiveBarrel(Entity):
         # Yellow hazard band
         self.band = Entity(
             parent=self,
-            model='cylinder',
+            model=CYL,
             position=(0, 0, 0),
             scale=(1.03, 0.35, 1.03),
             color=color.hex('#ffbe0b')
@@ -718,7 +731,7 @@ class PowerUp(Entity):
         )
         self.ring = Entity(
             parent=self,
-            model='cylinder',
+            model=CYL,
             scale=(1.4, 0.08, 1.4),
             rotation=(35, 0, 20),
             color=color.white,
@@ -824,7 +837,7 @@ class PlayerTank(Entity):
         # Cannon Barrel with Recoil
         self.barrel = Entity(
             parent=self.turret,
-            model='cylinder',
+            model=CYL,
             scale=(0.24, 1.4, 0.24),
             position=(0, 0.12, 0.8),
             rotation=(90, 0, 0),
@@ -832,7 +845,7 @@ class PlayerTank(Entity):
         )
         self.muzzle_tip = Entity(
             parent=self.turret,
-            model='cylinder',
+            model=CYL,
             scale=(0.28, 0.25, 0.28),
             position=(0, 0.12, 1.55),
             rotation=(90, 0, 0),
@@ -935,21 +948,16 @@ class PlayerTank(Entity):
         new_pos.z = max(-11.5, min(11.5, new_pos.z))
         self.position = new_pos
 
-        # Mouse Aiming in 3D: Raycast from camera along mouse ray to ground plane (Y=0)
-        aim_pt = None
-        if mouse.ray and mouse.ray.direction.y != 0:
-            # Exact mathematical ray-plane intersection at Y=0.7
-            t = (0.7 - camera.world_position.y) / mouse.ray.direction.y
-            if t > 0:
-                aim_pt = camera.world_position + mouse.ray.direction * t
-
-        if aim_pt is None and mouse.world_point:
-            aim_pt = mouse.world_point
+        # Mouse Aiming in 3D: Use Ursina's built-in mouse.world_point
+        aim_pt = mouse.world_point
+        if aim_pt is None:
+            aim_pt = self.world_position + self.turret.forward * 10.0
 
         if aim_pt:
-            # Aim turret at cursor position
+            # Aim turret horizontally at cursor position
             look_pos = Vec3(aim_pt.x, self.turret.world_y, aim_pt.z)
-            self.turret.look_at(look_pos)
+            if (look_pos - self.turret.world_position).length() > 0.2:
+                self.turret.look_at(look_pos)
 
             # Update tactical laser sight
             muzzle_wpos = self.muzzle_tip.world_position
@@ -1163,7 +1171,7 @@ class DroneScout(EnemyBase):
         # Cannon
         self.cannon = Entity(
             parent=self,
-            model='cylinder',
+            model=CYL,
             scale=(0.2, 0.8, 0.2),
             position=(0, 0.35, 0.95),
             rotation=(90, 0, 0),
@@ -1230,7 +1238,7 @@ class TurretSentry(EnemyBase):
         # Sturdy stationary base
         self.base_ent = Entity(
             parent=self,
-            model='cylinder',
+            model=CYL,
             scale=(1.8, 0.5, 1.8),
             position=(0, 0.25, 0),
             color=color.hex('#4a4e69'),
@@ -1256,7 +1264,7 @@ class TurretSentry(EnemyBase):
         for x_off in (-0.32, 0.32):
             g = Entity(
                 parent=self.dome,
-                model='cylinder',
+                model=CYL,
                 scale=(0.16, 1.0, 0.16),
                 position=(x_off, 0.05, 0.7),
                 rotation=(90, 0, 0),
@@ -1363,7 +1371,7 @@ class GoliathTank(EnemyBase):
         for x_off in (-0.5, 0.5):
             b = Entity(
                 parent=self.turret,
-                model='cylinder',
+                model=CYL,
                 scale=(0.3, 1.8, 0.3),
                 position=(x_off, 0.15, 1.2),
                 rotation=(90, 0, 0),
@@ -1422,6 +1430,16 @@ class Arena:
             collider='box'
         )
         self.entities.append(self.floor)
+
+        # Broad Invisible Ground Plane for 100% reliable mouse world_point aiming
+        self.ground_hitbox = Entity(
+            model='plane',
+            scale=(150, 1, 150),
+            position=(0, -0.01, 0),
+            visible=False,
+            collider='box'
+        )
+        self.entities.append(self.ground_hitbox)
 
         # Glowing Floor Grid Lines
         for x in range(-15, 16, 3):
@@ -1534,6 +1552,8 @@ class Arena:
 class GameDirector:
     """Manages wave spawning, score, HUD UI, player lifecycle, and game state."""
     def __init__(self):
+        global game
+        game = self
         self.score = 0
         self.wave = 1
         self.combo = 0
@@ -1795,7 +1815,7 @@ class GameDirector:
     def spawn_enemy_with_teleport(self, etype, pos):
         """Materializes an enemy with a stylish cyber spawn ring."""
         ring = Entity(
-            model='cylinder',
+            model=CYL,
             position=pos + Vec3(0, 0.1, 0),
             scale=(2.5, 0.05, 2.5),
             color=color.hex('#ff0a54'),
