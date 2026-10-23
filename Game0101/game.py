@@ -49,6 +49,13 @@ camera.fov = 50
 SOUNDS_DIR = Path(__file__).resolve().parent / 'sounds'
 
 
+def lerp_angle(a, b, t):
+    """Interpolates between two angles in degrees taking the shortest rotational path."""
+    diff = (b - a + 180) % 360 - 180
+    factor = max(0.0, min(1.0, t))
+    return a + diff * factor
+
+
 # =============================================================================
 #  PROCEDURAL AUDIO SYNTHESIS (Zero External Assets Required)
 # =============================================================================
@@ -383,6 +390,9 @@ class RicochetBullet(Entity):
     def update(self):
         step_dist = self.speed * time.dt
         ignore_list = [self, self.tail]
+        if game.arena and hasattr(game.arena, 'floor') and game.arena.floor:
+            ignore_list.append(game.arena.floor)
+
         # Ignore owner ONLY before the first bounce so player cannot shoot themselves point-blank
         if self.bounces_done == 0 and self.owner is not None:
             if hasattr(self.owner, 'parts'):
@@ -424,17 +434,21 @@ class RicochetBullet(Entity):
 
             # Check if we struck a reflective wall or solid obstacle
             if getattr(hit_ent, 'is_reflective', False) or getattr(hit_ent, 'is_wall', False):
-                # Calculate physics reflection: R = V - 2 * (V . N) * N
+                # Calculate physics reflection on 2D plane: R = V - 2 * (V . N) * N
                 normal = hit.normal
-                if normal.length() < 0.1:
+                normal.y = 0
+                if normal.length() < 0.05:
                     normal = -self.forward
+                    normal.y = 0
                 normal = normal.normalized()
 
                 dot = self.direction.dot(normal)
                 refl = (self.direction - 2 * dot * normal).normalized()
+                refl.y = 0
+                self.direction = refl.normalized()
 
-                self.direction = refl
-                self.world_position = hit.point + normal * 0.12
+                self.world_position = hit.point + normal * 0.15
+                self.world_y = 0.75  # Keep strictly on combat plane
                 self.look_at(self.world_position + self.direction)
 
                 self.bounces_left -= 1
@@ -504,6 +518,9 @@ class LaserSight:
 
     def update(self, origin, forward_dir):
         ignore_parts = self.tank.parts + [self.beam1, self.dot, self.beam2]
+        if game.arena and hasattr(game.arena, 'floor') and game.arena.floor:
+            ignore_parts.append(game.arena.floor)
+
         hit1 = raycast(origin, forward_dir, distance=35.0, ignore=ignore_parts)
 
         if hit1.hit:
@@ -516,11 +533,15 @@ class LaserSight:
             self.dot.enabled = True
             self.dot.world_position = hit1.point
 
-            # Calculate reflection for preview
+            # Calculate reflection for preview only on reflective surfaces
+            is_refl = getattr(hit1.entity, 'is_reflective', False) or getattr(hit1.entity, 'is_wall', False)
             normal = hit1.normal
-            if normal.length() > 0.1:
+            normal.y = 0
+            if is_refl and normal.length() > 0.05:
                 normal = normal.normalized()
                 refl_dir = (forward_dir - 2 * forward_dir.dot(normal) * normal).normalized()
+                refl_dir.y = 0
+                refl_dir = refl_dir.normalized()
                 hit2 = raycast(hit1.point + normal * 0.05, refl_dir, distance=18.0, ignore=ignore_parts + [hit1.entity])
                 dist2 = hit2.distance if hit2.hit else 14.0
                 end_pt = (hit1.point + normal * 0.05) + refl_dir * dist2
