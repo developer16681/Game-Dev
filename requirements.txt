@@ -1,0 +1,4 @@
+# Core Engine Dependencies for Game-Dev Showcase Collection
+pygame>=2.5.0
+ursina>=5.0.0
+numpy>=1.24.0
