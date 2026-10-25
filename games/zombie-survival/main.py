@@ -1,7 +1,7 @@
 import os
+import random
 from ursina import *
 from ursina.prefabs.first_person_controller import FirstPersonController
-import random
 
 # ==========================================
 # AUDIO MANAGER
@@ -16,15 +16,18 @@ class AudioManager:
     def play_sound(self, filename, volume=1.0, pitch=1.0):
         filepath = os.path.join(self.audio_dir, filename)
         if os.path.exists(filepath):
-            Audio(filepath, volume=volume, pitch=pitch, autoplay=True)
-        else:
-            # Fallback procedural blip if file missing
-            Audio(ursina.prefabs.ursfx.Step(), volume=volume * 0.2, pitch=pitch, autoplay=True)
+            try:
+                Audio(filepath, volume=volume, pitch=pitch, autoplay=True)
+            except Exception:
+                pass
 
     def play_bgm(self):
         filepath = os.path.join(self.audio_dir, "bgm.ogg")
         if os.path.exists(filepath):
-            Audio(filepath, volume=0.3, loop=True, autoplay=True)
+            try:
+                Audio(filepath, volume=0.3, loop=True, autoplay=True)
+            except Exception:
+                pass
 
 audio_manager = None
 
